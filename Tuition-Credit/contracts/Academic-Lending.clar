@@ -217,50 +217,56 @@
   )
 )
 
-;; Function to get all loans for a borrower
-(define-read-only (get-borrower-loans (borrower principal))
-  ;; We're using fold instead of recursion to iterate through potential loan IDs
-  (get result (fold check-loan-for-borrower-helper
-    (list u1 u2 u3 u4 u5 u6 u7 u8 u9 u10 u11 u12 u13 u14 u15 u16 u17 u18 u19 u20)
-    {result: (list 20 uint), borrower: borrower}
-  ))
-)
-
-;; Private helper function to check if a loan belongs to the specified borrower
-(define-private (check-loan-for-borrower-helper (loan-id uint) (context {result: (list 20 uint), borrower: principal}))
+;; Function to check if a loan belongs to a borrower
+(define-read-only (is-loan-owner (loan-id uint) (owner principal))
   (let
     (
       (loan (map-get? loans { loan-id: loan-id }))
-      (current-result (get result context))
-      (borrower-to-check (get borrower context))
     )
-    (if (and 
-          (is-some loan) 
-          (is-eq 
-            (get borrower (default-to 
-              {
-                borrower: 'SPAXYA5XS51713FDTQ8H94EJ4V579CXMTRNBZKSF,
-                amount: u0,
-                interest-rate: u0,
-                term-months: u0,
-                status: "",
-                disbursement-date: u0,
-                repayment-start-date: u0,
-                amount-paid: u0,
-                last-payment-date: u0
-              }
-              loan
-            ))
-            borrower-to-check
-          )
-        )
-      (merge context {result: (append current-result loan-id)})
-      context
+    (if (is-some loan)
+      (is-eq (get borrower (unwrap-panic loan)) owner)
+      false
     )
   )
 )
 
-;; Initialize the contract
-(begin
-  ;; Any initialization logic can go here
+;; Function to get all loans for a borrower - simplified version with nested let bindings
+(define-read-only (get-borrower-loans (borrower principal))
+  (let
+    (
+      (loan-1 (if (is-loan-owner u1 borrower) (some u1) none))
+      (loan-2 (if (is-loan-owner u2 borrower) (some u2) none))
+      (loan-3 (if (is-loan-owner u3 borrower) (some u3) none))
+      (loan-4 (if (is-loan-owner u4 borrower) (some u4) none))
+      (loan-5 (if (is-loan-owner u5 borrower) (some u5) none))
+      (empty-list (list))
+    )
+    ;; Use nested let bindings to build up the result
+    (let
+      (
+        (result-1 (if (is-some loan-1) (append empty-list (unwrap-panic loan-1)) empty-list))
+      )
+      (let
+        (
+          (result-2 (if (is-some loan-2) (append result-1 (unwrap-panic loan-2)) result-1))
+        )
+        (let
+          (
+            (result-3 (if (is-some loan-3) (append result-2 (unwrap-panic loan-3)) result-2))
+          )
+          (let
+            (
+              (result-4 (if (is-some loan-4) (append result-3 (unwrap-panic loan-4)) result-3))
+            )
+            (let
+              (
+                (result-5 (if (is-some loan-5) (append result-4 (unwrap-panic loan-5)) result-4))
+              )
+              result-5
+            )
+          )
+        )
+      )
+    )
+  )
 )

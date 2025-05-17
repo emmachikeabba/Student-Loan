@@ -10,6 +10,9 @@
 (define-constant ERR-INSUFFICIENT-FUNDS (err u106))
 (define-constant ERR-LOAN-ALREADY-DISBURSED (err u107))
 (define-constant ERR-LOAN-ALREADY-PAID (err u108))
+(define-constant ERR-INVALID-INTEREST-RATE (err u109))
+(define-constant ERR-INVALID-PRINCIPAL (err u110))
+(define-constant ERR-INVALID-LOAN-ID (err u111))
 
 ;; Define principal for the contract administrator
 (define-data-var contract-admin principal tx-sender)
@@ -51,7 +54,13 @@
 ;; Function to change contract administrator
 (define-public (set-contract-admin (new-admin principal))
   (begin
+    ;; Validate new-admin is not the zero address
+    (asserts! (not (is-eq new-admin 'SP000000000000000000002Q6VF78)) ERR-INVALID-PRINCIPAL)
+    
+    ;; Ensure only admin can change admin
     (asserts! (is-admin) ERR-NOT-AUTHORIZED)
+    
+    ;; Set new admin
     (ok (var-set contract-admin new-admin))
   )
 )
@@ -65,6 +74,7 @@
     ;; Validate loan parameters
     (asserts! (> amount u0) ERR-INVALID-LOAN-AMOUNT)
     (asserts! (and (> term-months u0) (<= term-months u240)) ERR-INVALID-LOAN-PERIOD) ;; Max 20 years
+    (asserts! (<= interest-rate u10000) ERR-INVALID-INTEREST-RATE) ;; Max 100% interest rate
     
     ;; Create the loan
     (map-set loans
@@ -92,99 +102,118 @@
 
 ;; Function for admin to approve a loan
 (define-public (approve-loan (loan-id uint))
-  (let
-    (
-      (loan (unwrap! (map-get? loans { loan-id: loan-id }) ERR-LOAN-NOT-FOUND))
+  (begin
+    ;; Validate loan-id
+    (asserts! (> loan-id u0) ERR-INVALID-LOAN-ID)
+    (asserts! (< loan-id (var-get next-loan-id)) ERR-INVALID-LOAN-ID)
+    
+    (let
+      (
+        (loan (unwrap! (map-get? loans { loan-id: loan-id }) ERR-LOAN-NOT-FOUND))
+      )
+      ;; Ensure only admin can approve loans
+      (asserts! (is-admin) ERR-NOT-AUTHORIZED)
+      
+      ;; Ensure loan is in PENDING status
+      (asserts! (is-eq (get status loan) "PENDING") ERR-LOAN-ALREADY-APPROVED)
+      
+      ;; Update loan status to APPROVED
+      (map-set loans
+        { loan-id: loan-id }
+        (merge loan { status: "APPROVED" })
+      )
+      
+      (ok true)
     )
-    ;; Ensure only admin can approve loans
-    (asserts! (is-admin) ERR-NOT-AUTHORIZED)
-    
-    ;; Ensure loan is in PENDING status
-    (asserts! (is-eq (get status loan) "PENDING") ERR-LOAN-ALREADY-APPROVED)
-    
-    ;; Update loan status to APPROVED
-    (map-set loans
-      { loan-id: loan-id }
-      (merge loan { status: "APPROVED" })
-    )
-    
-    (ok true)
   )
 )
 
 ;; Function to disburse approved loan funds
 (define-public (disburse-loan (loan-id uint))
-  (let
-    (
-      (loan (unwrap! (map-get? loans { loan-id: loan-id }) ERR-LOAN-NOT-FOUND))
-      (current-block (get-block-info? time block-height))
-    )
-    ;; Ensure only admin can disburse loans
-    (asserts! (is-admin) ERR-NOT-AUTHORIZED)
+  (begin
+    ;; Validate loan-id
+    (asserts! (> loan-id u0) ERR-INVALID-LOAN-ID)
+    (asserts! (< loan-id (var-get next-loan-id)) ERR-INVALID-LOAN-ID)
     
-    ;; Ensure loan is in APPROVED status
-    (asserts! (is-eq (get status loan) "APPROVED") ERR-LOAN-NOT-APPROVED)
-    
-    ;; Ensure contract has enough STX to disburse
-    (asserts! (>= (stx-get-balance (as-contract tx-sender)) (get amount loan)) ERR-INSUFFICIENT-FUNDS)
-    
-    ;; Calculate repayment start date (6 months after disbursement)
     (let
       (
-        (repayment-start (+ (default-to u0 current-block) (* u144 u180))) ;; ~180 days later (assuming ~144 blocks per day)
+        (loan (unwrap! (map-get? loans { loan-id: loan-id }) ERR-LOAN-NOT-FOUND))
+        (current-block (get-block-info? time block-height))
       )
-      ;; Transfer funds to borrower
-      (try! (as-contract (stx-transfer? (get amount loan) tx-sender (get borrower loan))))
+      ;; Ensure only admin can disburse loans
+      (asserts! (is-admin) ERR-NOT-AUTHORIZED)
       
-      ;; Update loan status and dates
-      (map-set loans
-        { loan-id: loan-id }
-        (merge loan {
-          status: "DISBURSED",
-          disbursement-date: (default-to u0 current-block),
-          repayment-start-date: repayment-start
-        })
+      ;; Ensure loan is in APPROVED status
+      (asserts! (is-eq (get status loan) "APPROVED") ERR-LOAN-NOT-APPROVED)
+      
+      ;; Ensure contract has enough STX to disburse
+      (asserts! (>= (stx-get-balance (as-contract tx-sender)) (get amount loan)) ERR-INSUFFICIENT-FUNDS)
+      
+      ;; Calculate repayment start date (6 months after disbursement)
+      (let
+        (
+          (repayment-start (+ (default-to u0 current-block) (* u144 u180))) ;; ~180 days later (assuming ~144 blocks per day)
+        )
+        ;; Transfer funds to borrower
+        (try! (as-contract (stx-transfer? (get amount loan) tx-sender (get borrower loan))))
+        
+        ;; Update loan status and dates
+        (map-set loans
+          { loan-id: loan-id }
+          (merge loan {
+            status: "DISBURSED",
+            disbursement-date: (default-to u0 current-block),
+            repayment-start-date: repayment-start
+          })
+        )
+        
+        (ok true)
       )
-      
-      (ok true)
     )
   )
 )
 
 ;; Function for borrower to make a loan payment
 (define-public (make-payment (loan-id uint) (payment-amount uint))
-  (let
-    (
-      (loan (unwrap! (map-get? loans { loan-id: loan-id }) ERR-LOAN-NOT-FOUND))
-      (current-block (get-block-info? time block-height))
-    )
-    ;; Ensure sender is the borrower
-    (asserts! (is-eq tx-sender (get borrower loan)) ERR-NOT-AUTHORIZED)
+  (begin
+    ;; Validate loan-id and payment-amount
+    (asserts! (> loan-id u0) ERR-INVALID-LOAN-ID)
+    (asserts! (< loan-id (var-get next-loan-id)) ERR-INVALID-LOAN-ID)
+    (asserts! (> payment-amount u0) ERR-INVALID-LOAN-AMOUNT)
     
-    ;; Ensure loan is in DISBURSED status
-    (asserts! (is-eq (get status loan) "DISBURSED") ERR-LOAN-NOT-APPROVED)
-    
-    ;; Calculate total amount paid after this payment
     (let
       (
-        (new-amount-paid (+ (get amount-paid loan) payment-amount))
-        (loan-amount (get amount loan))
-        (new-status (if (>= new-amount-paid loan-amount) "PAID" "DISBURSED"))
+        (loan (unwrap! (map-get? loans { loan-id: loan-id }) ERR-LOAN-NOT-FOUND))
+        (current-block (get-block-info? time block-height))
       )
-      ;; Transfer payment from borrower to contract
-      (try! (stx-transfer? payment-amount tx-sender (as-contract tx-sender)))
+      ;; Ensure sender is the borrower
+      (asserts! (is-eq tx-sender (get borrower loan)) ERR-NOT-AUTHORIZED)
       
-      ;; Update loan with payment information
-      (map-set loans
-        { loan-id: loan-id }
-        (merge loan {
-          amount-paid: new-amount-paid,
-          last-payment-date: (default-to u0 current-block),
-          status: new-status
-        })
+      ;; Ensure loan is in DISBURSED status
+      (asserts! (is-eq (get status loan) "DISBURSED") ERR-LOAN-NOT-APPROVED)
+      
+      ;; Calculate total amount paid after this payment
+      (let
+        (
+          (new-amount-paid (+ (get amount-paid loan) payment-amount))
+          (loan-amount (get amount loan))
+          (new-status (if (>= new-amount-paid loan-amount) "PAID" "DISBURSED"))
+        )
+        ;; Transfer payment from borrower to contract
+        (try! (stx-transfer? payment-amount tx-sender (as-contract tx-sender)))
+        
+        ;; Update loan with payment information
+        (map-set loans
+          { loan-id: loan-id }
+          (merge loan {
+            amount-paid: new-amount-paid,
+            last-payment-date: (default-to u0 current-block),
+            status: new-status
+          })
+        )
+        
+        (ok true)
       )
-      
-      (ok true)
     )
   )
 )
